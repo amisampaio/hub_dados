@@ -7,9 +7,6 @@ Installation:
 
 Usage
 
-    from hub_dados.left_pad import left_pad
+    from hub_dados import hub_dados as h
 
-    >>>left_pad('input', 10, '-')
-    -----input
-
-This package uses doctest for testing, run :code:`doctest hub_dados.py` to run the tests.
+This package uses doctest for testing
