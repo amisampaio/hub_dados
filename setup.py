@@ -1,12 +1,12 @@
 from distutils.core import setup
 
 setup(
-    name='pad-on-left',
+    name='hub_dados',
     version='1.0.0',
-    packages=['pad_on_left'],
-    url='https://github.com/ErnstHaagsman/pad-on-left',
+    packages=['hub_dados'],
+    url='https://github.com/amisampaio/hub_dados',
     license='Apache 2.0',
-    author='Ernst Haagsman',
-    author_email='ernst.haagsman@jetbrains.com',
-    description='A python implementation of left-pad'
+    author='Amilcar Sampaio',
+    author_email='amilcar.sampaio@gmail.com',
+    description='Hub de dados'
 )
