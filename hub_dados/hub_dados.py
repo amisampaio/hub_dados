@@ -277,6 +277,73 @@ def login_aws(aws_key, aws_region="",aws_bucket="",aws_output_athena="",aws_data
 
     return session, t
 
+
+def login_gcp(gcp_project_id, gcp_credentials_path="", gcp_bucket="", gcp_dataset_bigquery="", gcp_location="us-central1", ambiente_config='dev'):
+
+    global config
+
+    if gcp_bucket == '':
+        if ambiente_config == 'prod':
+            gcp_bucket = 'prod-dru-raw-zone'
+        else:
+            gcp_bucket = 'dru-raw-zone-dev'
+
+    if gcp_dataset_bigquery == '':
+        if ambiente_config == 'prod':
+            gcp_dataset_bigquery = 'raw_public_data_prod'
+        else:
+            gcp_dataset_bigquery = 'raw_public_data_dev'
+
+    try:
+        from google.cloud import storage as gcs_storage
+        from google.cloud import bigquery as bq
+
+        if gcp_credentials_path != "":
+            gcs_client = gcs_storage.Client.from_service_account_json(gcp_credentials_path, project=gcp_project_id)
+            bq_client = bq.Client.from_service_account_json(gcp_credentials_path, project=gcp_project_id)
+        else:
+            gcs_client = gcs_storage.Client(project=gcp_project_id)
+            bq_client = bq.Client(project=gcp_project_id)
+
+        config.cloud_provider = 'gcp'
+        config.gcp_project_id = gcp_project_id
+        config.gcp_credentials_path = gcp_credentials_path
+        config.gcp_bucket = gcp_bucket
+        config.gcp_dataset_bigquery = gcp_dataset_bigquery
+        config.gcp_location = gcp_location
+        config.gcs_client = gcs_client
+        config.bq_client = bq_client
+        config.ambiente_config = ambiente_config
+
+        # List buckets
+        gcp_buckets = []
+        try:
+            for bucket in gcs_client.list_buckets():
+                gcp_buckets.append(bucket.name)
+            config.gcp_buckets = gcp_buckets
+        except Exception as e:
+            config.gcp_buckets = ["Erro GCS:" + str(e)]
+
+        # List datasets
+        gcp_datasets = []
+        try:
+            for dataset in bq_client.list_datasets():
+                gcp_datasets.append(dataset.dataset_id)
+            config.gcp_datasets = gcp_datasets
+            config.bigquery_read = True
+        except Exception as e:
+            config.gcp_datasets = ["Erro BQ:" + str(e)]
+            config.bigquery_read = False
+
+        print("GCP session work")
+
+        t = tabelas_hub()
+        return gcs_client, bq_client, t
+
+    except Exception as e:
+        print("GCP erro:", str(e))
+        return None, None, None
+
 ####################################################################
 
 try:
@@ -293,6 +360,24 @@ except:
     try:
         install("python-gitlab")
         import gitlab
+    except:pass
+
+####################################################################
+# GCP imports
+try:
+  from google.cloud import storage as gcs_storage
+except:
+    try:
+        install("google-cloud-storage")
+        from google.cloud import storage as gcs_storage
+    except:pass
+
+try:
+  from google.cloud import bigquery as bq
+except:
+    try:
+        install("google-cloud-bigquery")
+        from google.cloud import bigquery as bq
     except:pass
 
 ####################################################################
@@ -350,6 +435,11 @@ except:
 
 try:
   os.makedirs("./consultas_athena/")
+except:
+  pass
+
+try:
+  os.makedirs("./consultas_bigquery/")
 except:
   pass
 
@@ -476,20 +566,38 @@ class enpoint_crawler(object):
 
 class tabelas_hub():
    def __init__(self):
-    try:
-      catalogo = config.athena_client.list_table_metadata(CatalogName="AwsDataCatalog", DatabaseName = config.aws_database_athena)
-      lista_tabelas = []
-      for dado in catalogo["TableMetadataList"]:
-        exec('self.' + dado["Name"] + ' = "' + dado["Name"] + '"')
-        lista_tabelas.append(dado["Name"])
-      self.all = lista_tabelas
-    except Exception as e:
-      if str(e).count("'str' object has no attribute 'list_table_metadata'") > 0:
-        print("\n", "AWS : Vc precisa fazer login para acessar os dados")
-      else:
-        print("Erro4:",str(e))
-        print(traceback.print_exc())
-      pass
+    if config.cloud_provider == 'gcp':
+      try:
+        bq_client = config.bq_client
+        dataset_ref = bq_client.dataset(config.gcp_dataset_bigquery)
+        tables = bq_client.list_tables(dataset_ref)
+        lista_tabelas = []
+        for table in tables:
+          exec('self.' + table.table_id + ' = "' + table.table_id + '"')
+          lista_tabelas.append(table.table_id)
+        self.all = lista_tabelas
+      except Exception as e:
+        if str(e).count("'str' object has no attribute") > 0:
+          print("\n", "GCP : Vc precisa fazer login para acessar os dados")
+        else:
+          print("Erro4:",str(e))
+          print(traceback.print_exc())
+        pass
+    else:
+      try:
+        catalogo = config.athena_client.list_table_metadata(CatalogName="AwsDataCatalog", DatabaseName = config.aws_database_athena)
+        lista_tabelas = []
+        for dado in catalogo["TableMetadataList"]:
+          exec('self.' + dado["Name"] + ' = "' + dado["Name"] + '"')
+          lista_tabelas.append(dado["Name"])
+        self.all = lista_tabelas
+      except Exception as e:
+        if str(e).count("'str' object has no attribute 'list_table_metadata'") > 0:
+          print("\n", "AWS : Vc precisa fazer login para acessar os dados")
+        else:
+          print("Erro4:",str(e))
+          print(traceback.print_exc())
+        pass
 
 ###########################################################################################################################
 
@@ -624,6 +732,21 @@ class ambiente_hub:
       self.gitlab_user = gitlab_user
       self.gitlab_key = gitlab_key
 
+      # Cloud provider: 'aws' (default) or 'gcp'
+      self.cloud_provider = 'aws'
+
+      # GCP defaults
+      self.gcp_project_id = ''
+      self.gcp_credentials_path = ''
+      self.gcp_bucket = ''
+      self.gcp_dataset_bigquery = ''
+      self.gcp_location = 'us-central1'
+      self.gcs_client = ''
+      self.bq_client = ''
+      self.gcp_buckets = []
+      self.gcp_datasets = []
+      self.bigquery_read = False
+
       try:
           if str(session)==str(boto3.Session()):
             try:
@@ -743,25 +866,41 @@ except:pass
 def info():
   print("------------------------------------------")
   print("ambiente:",config.ambiente_config)
+  print("cloud_provider:",config.cloud_provider)
   print("root_inicial:",config.root_inicial)
   print("------------------------------------------")
-  print("aws_access_key_id:",config.aws_access_key_id)
-  print("aws_secret_access_key:",config.aws_secret_access_key)
-  print("aws_session_token:",config.aws_session_token)
-  print("aws_region:",config.aws_region)
-  print("------------------------------------------")
-  print("aws_bucket:",config.aws_bucket)
-  print("------------------------------------------")
-  print("session:",config.session)
-  print("s3_client:",config.s3_client)
-  print("athena_resource:",config.athena_client)
-  print("s3_resource:",config.s3_resource)
-  print("------------------------------------------")
-  print("aws_output_athena:",config.aws_output_athena)
-  print("aws_database_athena:",config.aws_database_athena)
-  print("------------------------------------------")
-  print("buckets:",config.buckets)
-  print("catalogs:",config.catalogs)
+  if config.cloud_provider == 'gcp':
+    print("gcp_project_id:",config.gcp_project_id)
+    print("gcp_credentials_path:",config.gcp_credentials_path)
+    print("gcp_location:",config.gcp_location)
+    print("------------------------------------------")
+    print("gcp_bucket:",config.gcp_bucket)
+    print("------------------------------------------")
+    print("gcs_client:",config.gcs_client)
+    print("bq_client:",config.bq_client)
+    print("------------------------------------------")
+    print("gcp_dataset_bigquery:",config.gcp_dataset_bigquery)
+    print("------------------------------------------")
+    print("gcp_buckets:",config.gcp_buckets)
+    print("gcp_datasets:",config.gcp_datasets)
+  else:
+    print("aws_access_key_id:",config.aws_access_key_id)
+    print("aws_secret_access_key:",config.aws_secret_access_key)
+    print("aws_session_token:",config.aws_session_token)
+    print("aws_region:",config.aws_region)
+    print("------------------------------------------")
+    print("aws_bucket:",config.aws_bucket)
+    print("------------------------------------------")
+    print("session:",config.session)
+    print("s3_client:",config.s3_client)
+    print("athena_resource:",config.athena_client)
+    print("s3_resource:",config.s3_resource)
+    print("------------------------------------------")
+    print("aws_output_athena:",config.aws_output_athena)
+    print("aws_database_athena:",config.aws_database_athena)
+    print("------------------------------------------")
+    print("buckets:",config.buckets)
+    print("catalogs:",config.catalogs)
   print("------------------------------------------")
   print("api_key:", config.api_key)
   print("------------------------------------------")
@@ -860,9 +999,14 @@ def normalizar_csv_to_df(csv_name, database, crawler,base, amostras, csv_encodin
 
 
   #log_hub(path_log,"Adicionando colunas: data_base, data_extracao e url")
-  path_csv_s3 = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + path_s3 + "&region=" + regiao_aws
-  path_parquet_s3 = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + "parquet/" + path_s3.replace(".csv",".parquet") + "&region=" + regiao_aws
-  path_s3_raw_ = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + path_s3_raw + "&region=" + regiao_aws
+  if config.cloud_provider == 'gcp':
+    path_csv_s3 = "https://console.cloud.google.com/storage/browser/" + bucket + "/" + path_s3
+    path_parquet_s3 = "https://console.cloud.google.com/storage/browser/" + bucket + "/parquet/" + path_s3.replace(".csv",".parquet")
+    path_s3_raw_ = "https://console.cloud.google.com/storage/browser/" + bucket + "/" + path_s3_raw
+  else:
+    path_csv_s3 = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + path_s3 + "&region=" + regiao_aws
+    path_parquet_s3 = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + "parquet/" + path_s3.replace(".csv",".parquet") + "&region=" + regiao_aws
+    path_s3_raw_ = "https://s3.console.aws.amazon.com/s3/object/"+ bucket + "?prefix=" + path_s3_raw + "&region=" + regiao_aws
   df['hub_data_extracao'] = data_extracao
   df['hub_url_extracao'] = url
   df['hub_nome_crawler'] = crawler
@@ -966,6 +1110,67 @@ def df_upload_csv_to_s3(df, s3_resource, bucket, path_s3, regiao_aws, path_log="
         #print("Parquet sem upload AWS, variavel bucket está vazia : ", file_path )
 
 
+###########################################################################################################################
+# GCS upload functions
+###########################################################################################################################
+
+def df_upload_file_to_gcs(file_path, gcs_client, bucket_name, path_gcs, path_log=""):
+  if bucket_name != '':
+    try:
+      bucket = gcs_client.bucket(bucket_name)
+      blob = bucket.blob(path_gcs)
+      blob.upload_from_filename(file_path)
+      log_hub(path_log, "Upload GCS 1 : " + bucket_name + "/" + path_gcs)
+    except Exception as e:
+      log_hub(path_log, "Erro upload GCS : " + str(e))
+  else:
+    log_hub(path_log, "csv sem upload GCS variavel bucket está vazia : " + file_path)
+
+###########################################################################################################################
+
+def df_upload_csv_to_gcs(df, gcs_client, bucket_name, path_gcs, path_log="", Upload_GCS=True):
+  if Upload_GCS:
+      if bucket_name != '':
+          export_encoding = 'utf-8'
+          export_sep = ';'
+
+          # Upload CSV
+          file_buffer = StringIO()
+          df.to_csv(file_buffer, index=False, encoding=export_encoding, sep=export_sep, doublequote=True)
+          bucket = gcs_client.bucket(bucket_name)
+          blob = bucket.blob(path_gcs)
+          blob.upload_from_string(file_buffer.getvalue(), content_type='text/csv')
+          log_hub(path_log, "Upload GCS 2 : " + bucket_name + '/' + path_gcs)
+
+          # Upload Parquet
+          buffer_parquet = io.BytesIO()
+          df_parquet = df.astype(str)
+          df_parquet.to_parquet(buffer_parquet, engine='pyarrow')
+          parquet_path = "parquet/" + path_gcs.replace(".csv", ".parquet")
+          blob_parquet = bucket.blob(parquet_path)
+          blob_parquet.upload_from_string(buffer_parquet.getvalue(), content_type='application/octet-stream')
+          log_hub(path_log, "Upload GCS 3 : " + bucket_name + '/' + parquet_path)
+          return df
+      else:
+        log_hub(path_log, "Parquet sem upload GCS variavel bucket está vazia")
+
+###########################################################################################################################
+# Cloud-agnostic upload functions
+###########################################################################################################################
+
+def df_upload_file_to_cloud(file_path, bucket_or_name, path_cloud, regiao="", path_log=""):
+  if config.cloud_provider == 'gcp':
+    df_upload_file_to_gcs(file_path, config.gcs_client, bucket_or_name, path_cloud, path_log)
+  else:
+    df_upload_file_to_s3(file_path, config.s3_resource, bucket_or_name, path_cloud, regiao, path_log)
+
+###########################################################################################################################
+
+def df_upload_csv_to_cloud(df, bucket_or_name, path_cloud, regiao="", path_log="", Upload=True):
+  if config.cloud_provider == 'gcp':
+    return df_upload_csv_to_gcs(df, config.gcs_client, bucket_or_name, path_cloud, path_log, Upload)
+  else:
+    return df_upload_csv_to_s3(df, config.s3_resource, bucket_or_name, path_cloud, regiao, path_log, Upload)
 
 ###########################################################################################################################
 
@@ -1176,10 +1381,138 @@ def download_athena(Query, Output_Local_Path="", Output_File_Name=""):
     return run_querry_athena(Query, Output_Local_Path, Output_File_Name, True, False)
 
 ###########################################################################################################################
-    
+
 def frame_athena(Query):
     #config = ambiente_hub() if config == "" else config
     return run_querry_athena( Query, "", "", False, True)
+
+###########################################################################################################################
+# BigQuery functions
+###########################################################################################################################
+
+def run_query_bigquery(Query, Output_Local_Path="", Output_File_Name="", Export_Local=False, Export_Frame=True):
+
+  import os
+  cwd = os.getcwd()
+
+  try:
+    bq_client = config.bq_client
+
+    job_config = bq.QueryJobConfig(default_dataset=config.gcp_project_id + "." + config.gcp_dataset_bigquery)
+    query_job = bq_client.query(Query, job_config=job_config)
+    results = query_job.result()
+
+    if Export_Local:
+      import os
+      os.chdir(Output_Local_Path if Output_Local_Path != "" else cwd)
+      df = results.to_dataframe()
+      df.to_csv(Output_File_Name + '.csv', index=False)
+      os.chdir(cwd)
+      return "ok"
+
+    if Export_Frame:
+      return results.to_dataframe()
+
+  except Exception as e:
+    print("Erro BigQuery:", str(e))
+    import os
+    os.chdir(cwd)
+
+###########################################################################################################################
+
+def download_bigquery(Query, Output_Local_Path="", Output_File_Name=""):
+    Output_Local_Path = config.root_inicial if Output_Local_Path == "" else Output_Local_Path
+    Output_File_Name = "output_bigquery" if Output_File_Name == "" else Output_File_Name
+    return run_query_bigquery(Query, Output_Local_Path, Output_File_Name, True, False)
+
+###########################################################################################################################
+
+def frame_bigquery(Query):
+    return run_query_bigquery(Query, "", "", False, True)
+
+###########################################################################################################################
+
+def create_table_bigquery(bq_client, dataset_id, table_name, head, source_uri, path_log=""):
+
+  try:
+    dataset_ref = bq_client.dataset(dataset_id)
+
+    # Drop table if exists
+    try:
+      bq_client.delete_table(dataset_ref.table(table_name), not_found_ok=True)
+      log_hub(path_log, "DROP TABLE BigQuery " + table_name)
+    except Exception as e:
+      log_hub(path_log, "Erro drop BigQuery: " + str(e))
+
+    # Create external table from GCS parquet
+    table_ref = dataset_ref.table(table_name)
+    external_config = bq.ExternalConfig("PARQUET")
+    external_config.source_uris = [source_uri + "*.parquet"]
+    external_config.autodetect = True
+
+    table = bq.Table(table_ref)
+    table.external_data_configuration = external_config
+
+    bq_client.create_table(table, exists_ok=True)
+    log_hub(path_log, "CREATE EXTERNAL TABLE BigQuery " + table_name)
+    return True
+
+  except Exception as e:
+    log_hub(path_log, "Erro create table BigQuery: " + str(e))
+    print("Erro BigQuery:", str(e))
+    return False
+
+###########################################################################################################################
+
+def create_table_bigquery_csv(bq_client, dataset_id, table_name, head, source_uri, path_log=""):
+
+  try:
+    dataset_ref = bq_client.dataset(dataset_id)
+
+    # Drop table if exists
+    try:
+      bq_client.delete_table(dataset_ref.table(table_name), not_found_ok=True)
+      log_hub(path_log, "DROP TABLE BigQuery CSV " + table_name)
+    except Exception as e:
+      log_hub(path_log, "Erro drop BigQuery: " + str(e))
+
+    # Create external table from GCS CSV
+    table_ref = dataset_ref.table(table_name)
+    external_config = bq.ExternalConfig("CSV")
+    external_config.source_uris = [source_uri + "*.csv"]
+    external_config.options.skip_leading_rows = 1
+    external_config.options.field_delimiter = ";"
+    external_config.autodetect = True
+
+    table = bq.Table(table_ref)
+    table.external_data_configuration = external_config
+
+    bq_client.create_table(table, exists_ok=True)
+    log_hub(path_log, "CREATE EXTERNAL TABLE BigQuery CSV " + table_name)
+    return True
+
+  except Exception as e:
+    log_hub(path_log, "Erro create table BigQuery CSV: " + str(e))
+    print("Erro BigQuery:", str(e))
+    return False
+
+###########################################################################################################################
+# Cloud-agnostic query functions
+###########################################################################################################################
+
+def frame_cloud(Query):
+  if config.cloud_provider == 'gcp':
+    return frame_bigquery(Query)
+  else:
+    return frame_athena(Query)
+
+###########################################################################################################################
+
+def download_cloud(Query, Output_Local_Path="", Output_File_Name=""):
+  if config.cloud_provider == 'gcp':
+    return download_bigquery(Query, Output_Local_Path, Output_File_Name)
+  else:
+    return download_athena(Query, Output_Local_Path, Output_File_Name)
 
 ###########################################################################################################################
 
@@ -1188,14 +1521,18 @@ def get_data_frame(table,limit="5",where="",info="put all on limit to bring all"
   LIMITE = "LIMIT " + limit
   if limit == "all":
     LIMITE = ""
-  Query = 'select * FROM ' + config.aws_database_athena + '.' + table + ' ' + where + LIMITE
-  return frame_athena(Query)
+  if config.cloud_provider == 'gcp':
+    Query = 'select * FROM `' + config.gcp_project_id + '.' + config.gcp_dataset_bigquery + '.' + table + '` ' + where + LIMITE
+    return frame_bigquery(Query)
+  else:
+    Query = 'select * FROM ' + config.aws_database_athena + '.' + table + ' ' + where + LIMITE
+    return frame_athena(Query)
 
 ###########################################################################################################################
 
 def get_data_frame_sql(Query):
   #config = ambiente_hub() if config == "" else config
-  return frame_athena(Query)
+  return frame_cloud(Query)
 
 ###########################################################################################################################
 
@@ -1204,8 +1541,12 @@ def get_data_file(table,limit="5",info="put all on limit to bring all"):
   LIMITE = "LIMIT " + limit
   if limit == "all":
     LIMITE = ""
-  Query = 'select * FROM ' + config.aws_database_athena + '.' + table + ' ' + LIMITE
-  return download_athena(Query,"./consultas_athena/", table)
+  if config.cloud_provider == 'gcp':
+    Query = 'select * FROM `' + config.gcp_project_id + '.' + config.gcp_dataset_bigquery + '.' + table + '` ' + LIMITE
+    return download_bigquery(Query, "./consultas_bigquery/", table)
+  else:
+    Query = 'select * FROM ' + config.aws_database_athena + '.' + table + ' ' + LIMITE
+    return download_athena(Query,"./consultas_athena/", table)
   
 ###########################################################################################################################
 
@@ -1478,8 +1819,11 @@ def simples_download(setup_crawler,crawler_lib,endpoint, ano, mes, dia, download
   dia_extracao, mes_extracao,ano_extracao  = _extracao.strftime("%d"), _extracao.strftime("%m"), _extracao.strftime("%Y")
   
   regiao_aws = config.aws_region
-  bucket = config.aws_bucket
-  
+  if config.cloud_provider == 'gcp':
+    bucket = config.gcp_bucket
+  else:
+    bucket = config.aws_bucket
+
   zip_name = setup_crawler.setup(endpoint,ano,mes,dia).get_config()["zip_name"]
 
 
@@ -1520,7 +1864,10 @@ def simples_download(setup_crawler,crawler_lib,endpoint, ano, mes, dia, download
       if status == True:
         try:
             if Upload_AWS:
-                df_upload_file_to_s3(path_thread+zip_name, config.s3_resource, bucket, path_s3_raw, regiao_aws, path_log)
+                if config.cloud_provider == 'gcp':
+                    df_upload_file_to_gcs(path_thread+zip_name, config.gcs_client, bucket, path_s3_raw, path_log)
+                else:
+                    df_upload_file_to_s3(path_thread+zip_name, config.s3_resource, bucket, path_s3_raw, regiao_aws, path_log)
         except Exception as e:
             log_hub(path_log, "ERRO | Arquivo nao disponível : " + str(e))
             status = False
@@ -1557,9 +1904,9 @@ def simples_download(setup_crawler,crawler_lib,endpoint, ano, mes, dia, download
 
   except Exception as e:
 
-    if (str(e).count('Unable to locate credentials') > 0) | (str(e).count('Failed to upload') > 0) | (str(e).count('InvalidClientTokenId') > 0):
-      log_hub(path_log, "ERRO | AWS indisponivel : AccessDenied | " + id_extracao + " | ")
-      print("\n","AWS : Failed to upload / AccessDenied " )
+    if (str(e).count('Unable to locate credentials') > 0) | (str(e).count('Failed to upload') > 0) | (str(e).count('InvalidClientTokenId') > 0) | (str(e).count('google.auth') > 0) | (str(e).count('Forbidden') > 0):
+      log_hub(path_log, "ERRO | Cloud indisponivel : AccessDenied | " + id_extracao + " | ")
+      print("\n", config.cloud_provider.upper() + " : Failed to upload / AccessDenied ")
       status = True
     else:
       exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1646,7 +1993,10 @@ def upload_all_csvs(setup_crawler,crawler_lib,amostras, upload_s3, gerar_athena,
     base = setup_crawler.setup(endpoint, ano, mes, dia, file_csv).get_config()["base"]
     padrao_s3 = setup_crawler.setup(endpoint, ano, mes, dia, file_csv).get_config()["padrao_s3"]
     regiao_aws = config.aws_region
-    bucket = config.aws_bucket
+    if config.cloud_provider == 'gcp':
+      bucket = config.gcp_bucket
+    else:
+      bucket = config.aws_bucket
     s3_resource = config.s3_resource
 
     s = file_csv[file_csv.rfind('/') + 1 : len(file_csv)]
@@ -1702,27 +2052,41 @@ def upload_all_csvs(setup_crawler,crawler_lib,amostras, upload_s3, gerar_athena,
     if upload_s3 == True:
 
       # possibilidade de fazer o upload multithread
-      df = df_upload_csv_to_s3(df, s3_resource, bucket, path_s3, regiao_aws, path_log, Upload_AWS )
-      
+      if config.cloud_provider == 'gcp':
+        df = df_upload_csv_to_gcs(df, config.gcs_client, bucket, path_s3, path_log, Upload_AWS)
+      else:
+        df = df_upload_csv_to_s3(df, s3_resource, bucket, path_s3, regiao_aws, path_log, Upload_AWS )
+
     if gerar_athena:
         log_hub(path_log,"")
         #log_hub(path_log,"************************************************************")
-        log_hub(path_log,"gerar athena:" + str(gerar_athena))
+        log_hub(path_log,"gerar tabelas:" + str(gerar_athena))
         #log_hub(path_log,"************************************************************")
         log_hub(path_log,"")
 
     if gerar_athena == True:
-      
-      banco_dados = config.aws_database_athena
-      output_athena = config.aws_output_athena
-      #tabela = "`" + banco_dados + "`.`hub_v1_" + crawler + "_" + base + "`"
-      tabela_parquet = "`" + banco_dados + "`.`" + crawler + "_" + base + "`"
-      source = "s3://" + bucket + "/" + 'crawler' + "/" + crawler + "/" + base + "/" 
-      source_parquet = "s3://" + bucket + "/parquet/" + 'crawler' + "/" + crawler + "/" + base + "/"
 
-      log_hub(path_log,"Criando tabela Athena" + tabela_parquet)
-      #hub.create_table_athena(athena_resource, banco_dados, tabela, hub.df_head(df) , source, output_athena, path_log )
-      create_table_athena_parquet(config.athena_client, banco_dados, tabela_parquet, df_head(df) , source_parquet, output_athena, path_log )
+      if config.cloud_provider == 'gcp':
+        # BigQuery table creation
+        dataset_id = config.gcp_dataset_bigquery
+        table_name = crawler + "_" + base
+        source_parquet = "gs://" + bucket + "/parquet/" + 'crawler' + "/" + crawler + "/" + base + "/"
+
+        log_hub(path_log, "Criando tabela BigQuery " + table_name)
+        create_table_bigquery(config.bq_client, dataset_id, table_name, df_head(df), source_parquet, path_log)
+
+      else:
+        # Athena table creation
+        banco_dados = config.aws_database_athena
+        output_athena = config.aws_output_athena
+        #tabela = "`" + banco_dados + "`.`hub_v1_" + crawler + "_" + base + "`"
+        tabela_parquet = "`" + banco_dados + "`.`" + crawler + "_" + base + "`"
+        source = "s3://" + bucket + "/" + 'crawler' + "/" + crawler + "/" + base + "/"
+        source_parquet = "s3://" + bucket + "/parquet/" + 'crawler' + "/" + crawler + "/" + base + "/"
+
+        log_hub(path_log,"Criando tabela Athena" + tabela_parquet)
+        #hub.create_table_athena(athena_resource, banco_dados, tabela, hub.df_head(df) , source, output_athena, path_log )
+        create_table_athena_parquet(config.athena_client, banco_dados, tabela_parquet, df_head(df) , source_parquet, output_athena, path_log )
 
 ###################################################################################################################################################
 
@@ -2250,13 +2614,15 @@ def gerar_tabelas_athena(crawler_name="", endpoint_name=""):
     #print("Erro 10:",str(e))
     pass
 
-  if config.aws_bucket != '':
+  _bucket_check = config.gcp_bucket if config.cloud_provider == 'gcp' else config.aws_bucket
+  if _bucket_check != '':
 
+      _provider_name = "BigQuery" if config.cloud_provider == 'gcp' else "Athena"
       if not(isnotebook()):
         print("")
       print("--------------------------------------------------------------------------------")
       print("")
-      print("Gerando tabelas athena...")
+      print("Gerando tabelas " + _provider_name + "...")
       print("")
 
 
